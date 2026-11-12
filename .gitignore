@@ -1,0 +1,21 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Local scratch
+.tmp/
+.cache/
+
+# CMake / compiler outputs
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+
+# Editors / OS
+.idea/
+.DS_Store
+
+.vscode

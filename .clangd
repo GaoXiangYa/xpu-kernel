@@ -1,0 +1,31 @@
+# clangd configuration.
+#
+# Only CUDA sources need custom handling:
+#  * build/compile_commands.json contains nvcc-specific flags clangd's driver
+#    does not understand, so we switch to clang++ and remove them;
+#  * clangd 18 only supports CUDA <= 12.3, so real CUDA 13.x headers produce
+#    bogus errors. We parse with -nocudainc and small local runtime/bf16 stubs.
+#
+# Host sources (*.cpp: GoogleTest driver and benchmark) are parsed normally as
+# C++ against the real CUDA headers, so gtest works without shims.
+#
+# If you use another GPU architecture, update --cuda-gpu-arch below.
+If:
+  PathMatch: .*\.(cu|cuh)$
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - -nocudainc
+    - -include
+    - ../tools/clangd/cuda_stub/cuda_runtime.h
+    - -include
+    - ../tools/clangd/cuda_stub/cuda_math_shim.h
+    - -I../tools/clangd/cuda_stub
+    - --cuda-path=/usr/local/cuda
+    - --cuda-gpu-arch=sm_86
+    - -Wno-unknown-cuda-version
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --generate-code=*
+    - -Xcompiler=*
+    - -lineinfo
