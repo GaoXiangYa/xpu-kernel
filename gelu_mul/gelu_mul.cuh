@@ -6,20 +6,21 @@
 
 namespace xpu::gelu_mul {
 
-// Fused GELU + multiply:
+// Fused GELU + multiply for the XPUOJ "Gelu and Mul" problem.
 //
-//   out[i] = gelu(x[i]) * gate[i]
+// input:  (batch_size, 2 * hidden_size), row-major contiguous, bf16
+// out:    (batch_size, hidden_size),    row-major contiguous, bf16
 //
-// using the tanh approximation
+//   x1 = input[:, :hidden_size]
+//   x2 = input[:, hidden_size:]
+//   out = gelu_exact(x1) * x2
 //
-//   gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-//
-// Tensors are contiguous bf16 arrays of `n` elements. Compute in fp32 and round
-// the result back to bf16. `stream` may be nullptr (the legacy default stream).
-using LaunchFn = void (*)(const bf16* x, const bf16* gate, bf16* out, int n, cudaStream_t stream);
+// GELU uses the exact erf form:
+//   gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+using LaunchFn = void (*)(const bf16* input, bf16* out, long batch_size, long hidden_size, cudaStream_t stream);
 
-// Version 0: one element per thread, scalar loads/stores.
-void launch_v0(const bf16* x, const bf16* gate, bf16* out, int n, cudaStream_t stream = nullptr);
+// Version 0: one output element per thread, 2D grid (columns x rows).
+void launch_v0(const bf16* input, bf16* out, long batch_size, long hidden_size, cudaStream_t stream = nullptr);
 
 struct Variant {
   const char* name;
@@ -33,22 +34,27 @@ inline constexpr Variant kVariants[] = {
 
 inline constexpr int kNumVariants = static_cast<int>(sizeof(kVariants) / sizeof(kVariants[0]));
 
-inline double gelu_tanh_reference(double x) {
-  constexpr double kSqrtTwoOverPi = 0.79788456080286535588;
-  constexpr double kCubicCoefficient = 0.044715;
-  const double x_cubed = x * x * x;
-  return 0.5 * x * (1.0 + std::tanh(kSqrtTwoOverPi * (x + kCubicCoefficient * x_cubed)));
+inline double gelu_exact_reference(double x) {
+  constexpr double kInvSqrtTwo = 0.70710678118654752440084436210485;
+  return 0.5 * x * (1.0 + std::erf(x * kInvSqrtTwo));
 }
 
 // CPU reference evaluated in double precision, then rounded to bf16 using the
 // same float -> bf16 path as the kernels.
-inline void reference(const bf16* x, const bf16* gate, bf16* out, int n) {
-  for (int i = 0; i < n; ++i) {
-    const double xf = static_cast<double>(bf16_to_float(x[i]));
-    const double gf = static_cast<double>(bf16_to_float(gate[i]));
-    const double value = gelu_tanh_reference(xf) * gf;
-    out[i] = bf16_from_float(static_cast<float>(value));
+inline void reference(const bf16* input, bf16* out, long batch_size, long hidden_size) {
+  for (long row = 0; row < batch_size; ++row) {
+    const bf16* input_row = input + row * 2 * hidden_size;
+    bf16* out_row = out + row * hidden_size;
+    for (long col = 0; col < hidden_size; ++col) {
+      const double x = static_cast<double>(bf16_to_float(input_row[col]));
+      const double gate = static_cast<double>(bf16_to_float(input_row[hidden_size + col]));
+      const double value = gelu_exact_reference(x) * gate;
+      out_row[col] = bf16_from_float(static_cast<float>(value));
+    }
   }
 }
 
 }  // namespace xpu::gelu_mul
+
+// XPUOJ entry point. Must remain a C symbol with exactly this signature.
+extern "C" void run_kernel(const __nv_bfloat16* input, __nv_bfloat16* out, long batch_size, long hidden_size);
