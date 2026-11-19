@@ -1,48 +1,79 @@
-#include "gelu_mul/gelu_mul.cuh"
+// Self-contained submission skeleton for XPUOJ "Gelu and Mul".
+//
+// Copy this file to the judge as-is; all OJ-facing pieces live here:
+//   * bf16 conversion helpers
+//   * one __global__ kernel
+//   * launch_v0 (grid/block configuration)
+//   * extern "C" run_kernel entry point
+//
+// TODO:
+//   1. Implement the exact erf GELU.
+//   2. Map one output element to one thread, split input row [2 * hidden_size]
+//      into x1 = input[row, col] and x2 = input[row, hidden_size + col].
+//   3. Configure a 2D grid (columns x rows) and launch the kernel.
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+#include <cmath>
 
-#include "common/cuda_check.cuh"
+namespace xpu {
+namespace gelu_mul {
 
-namespace xpu::gelu_mul {
-namespace {
+using bf16 = __nv_bfloat16;
 
-constexpr int kBlockSize = 256;
+__host__ __device__ __forceinline__ bf16 bf16_from_float(float value) {
+  return __float2bfloat16(value);
+}
 
+__host__ __device__ __forceinline__ float bf16_to_float(bf16 value) {
+  return __bfloat162float(value);
+}
+
+// TODO: return 0.5 * x * (1 + erf(x / sqrt(2))).
 __device__ __forceinline__ float gelu_exact(float x) {
-  constexpr float kInvSqrtTwo = 0.70710678118654752440f;
-  return 0.5f * x * (1.0f + erff(x * kInvSqrtTwo));
+  constexpr float kInvSqrt2 = 0.707106781186;
+  return 0.5 * x * (1 + erff(x * kInvSqrt2));
 }
 
 __global__ void gelu_mul_kernel_v0(const bf16* __restrict__ input, bf16* __restrict__ out, long hidden_size) {
+  // TODO: compute one output element per thread.
+  const int row = blockIdx.y;
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
-  const long row = blockIdx.y;
 
   if (col < hidden_size) {
-    const long input_offset = row * 2 * hidden_size;
-    const float x = bf16_to_float(input[input_offset + col]);
-    const float gate = bf16_to_float(input[input_offset + hidden_size + col]);
-    out[row * hidden_size + col] = bf16_from_float(gelu_exact(x) * gate);
+    const int input_base = (row << 1) * hidden_size + col;
+    float gelu = gelu_exact(bf16_to_float(input[input_base]));
+    float gate = bf16_to_float(input[input_base + hidden_size]);
+    out[row * hidden_size + col] =  bf16_from_float(gelu * gate);
   }
 }
 
-}  // namespace
 
-void launch_v0(const bf16* input, bf16* out, long batch_size, long hidden_size, cudaStream_t stream) {
+void launch_v0(const __nv_bfloat16* input, __nv_bfloat16* out, long batch_size, long hidden_size, cudaStream_t stream) {
   if (batch_size <= 0 || hidden_size <= 0) {
     return;
   }
 
-  // CUDA grid.y is limited to 65535; the XPUOJ constraints keep batch_size far
-  // below that limit.
-  const unsigned int blocks_x = static_cast<unsigned int>((hidden_size + kBlockSize - 1) / kBlockSize);
-  const unsigned int blocks_y = static_cast<unsigned int>(batch_size);
-  const dim3 grid(blocks_x, blocks_y);
+  constexpr int kBlockSize = 512;
 
+  const int block_x = (hidden_size + kBlockSize - 1) / kBlockSize;
+  const int block_y = batch_size;
+  dim3 grid(block_x, block_y);
+
+  // TODO: choose block size, build a 2D grid (columns x rows), then launch:
   gelu_mul_kernel_v0<<<grid, kBlockSize, 0, stream>>>(input, out, hidden_size);
-  XPU_CUDA_LAUNCH_CHECK();
 }
 
-}  // namespace xpu::gelu_mul
+}  // namespace gelu_mul
+}  // namespace xpu
 
+// XPUOJ entry point. Must stay a C symbol with exactly this signature.
+//
+// For local multi-version builds CMake defines XPU_DISABLE_OJ_ENTRY on every
+// version file except v0, so only one run_kernel is linked. When this file is
+// submitted to XPUOJ standalone, the macro is not defined and the entry point
+// is included.
+#ifndef XPU_DISABLE_OJ_ENTRY
 extern "C" void run_kernel(const __nv_bfloat16* input, __nv_bfloat16* out, long batch_size, long hidden_size) {
   xpu::gelu_mul::launch_v0(input, out, batch_size, hidden_size, nullptr);
 }
+#endif

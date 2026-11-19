@@ -22,6 +22,8 @@ using LaunchFn = void (*)(const bf16* input, bf16* out, long batch_size, long hi
 // Version 0: one output element per thread, 2D grid (columns x rows).
 void launch_v0(const bf16* input, bf16* out, long batch_size, long hidden_size, cudaStream_t stream = nullptr);
 
+void launch_v1(const bf16* input, bf16* out, long batch_size, long hidden_size, cudaStream_t stream = nullptr);
+
 struct Variant {
   const char* name;
   LaunchFn launch;
@@ -30,6 +32,7 @@ struct Variant {
 // Add every new implementation here. The test driver iterates this table.
 inline constexpr Variant kVariants[] = {
     {"v0_naive", &launch_v0},
+    {"v1", &launch_v1},
 };
 
 inline constexpr int kNumVariants = static_cast<int>(sizeof(kVariants) / sizeof(kVariants[0]));
